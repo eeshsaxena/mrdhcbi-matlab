@@ -1,0 +1,10 @@
+*.asv
+*.m~
+*.mat
+*.fig
+*.log
+*.DS_Store
+Thumbs.db
+test_images/*.bmp
+test_images/*.png
+test_images/*.jpg
