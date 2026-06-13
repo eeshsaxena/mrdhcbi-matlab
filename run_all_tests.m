@@ -2,139 +2,160 @@
 %
 %  Tests cover:
 %    T1: VC basis matrix properties (row weights, OR weight thresholds)
-%    T2: Encryption correctness (pixel block Hamming weight = W)
-%    T3: Embed->Extract round-trip (bit error rate = 0)
-%    T4: Encrypt->Embed->Extract->Recover pipeline (lossless recovery)
-%    T5: k-out-of-n property (any k shares suffice; k-1 shares fail)
-%    T6: All image types
+%    T2: Encryption correctness (pixel block Hamming weight = W for all shares)
+%    T3: Embed -> Extract round-trip (BER = 0 for all shares)
+%    T4: Full pipeline lossless recovery (all image types)
+%    T5: k-out-of-n property (any 2 of 3 shares recover losslessly)
 
 clear; clc;
 addpath(genpath('src'));
 addpath(genpath('utils'));
 
-pass = 0; fail = 0;
+n_pass = 0;
+n_fail = 0;
 
-function assert_true(cond, name)
+% Helper: print result and update counters
+function [p, f] = check(cond, name, p, f)
     if cond
         fprintf('  [PASS] %s\n', name);
-        evalin('caller', 'pass = pass + 1;');
+        p = p + 1;
     else
         fprintf('  [FAIL] %s\n', name);
-        evalin('caller', 'fail = fail + 1;');
+        f = f + 1;
     end
 end
 
-%% T1: Basis matrix properties
+%% ── T1: Basis matrix properties ─────────────────────────────────────────────
 fprintf('\n--- T1: Basis matrix properties ---\n');
 [B0, B1, m, W, d] = vc_basis_matrices(2, 3);
 
-% All rows of B0 have weight W
-rows_B0_ok = all(sum(B0, 2) == W);
-assert_true(rows_B0_ok, 'B0 row weights all equal W');
+[n_pass, n_fail] = check(all(sum(B0,2) == W), ...
+    'B0: all row weights equal W', n_pass, n_fail);
+[n_pass, n_fail] = check(all(sum(B1,2) == W), ...
+    'B1: all row weights equal W', n_pass, n_fail);
 
-% All rows of B1 have weight W
-rows_B1_ok = all(sum(B1, 2) == W);
-assert_true(rows_B1_ok, 'B1 row weights all equal W');
+% OR of any 2 rows of B0 -> weight < d (white stays recoverable)
+or_w = [];
+for i=1:3; for j=i+1:3; or_w(end+1)=sum(B0(i,:)|B0(j,:)); end; end
+[n_pass, n_fail] = check(all(or_w < d), ...
+    'OR of 2 B0 rows weight < d  (white pixel condition)', n_pass, n_fail);
 
-% OR of any 2 rows of B0 has weight u < d
-or_B0 = [];
-for i = 1:3
-    for j = i+1:3
-        or_B0(end+1) = sum(B0(i,:) | B0(j,:));
-    end
-end
-assert_true(all(or_B0 < d), 'OR of 2 B0 rows weight < d (white pixel recoverable)');
+% OR of any 2 rows of B1 -> weight >= d (black stays recoverable)
+or_b = [];
+for i=1:3; for j=i+1:3; or_b(end+1)=sum(B1(i,:)|B1(j,:)); end; end
+[n_pass, n_fail] = check(all(or_b >= d), ...
+    'OR of 2 B1 rows weight >= d (black pixel condition)', n_pass, n_fail);
 
-% OR of any 2 rows of B1 has weight >= d
-or_B1 = [];
-for i = 1:3
-    for j = i+1:3
-        or_B1(end+1) = sum(B1(i,:) | B1(j,:));
-    end
-end
-assert_true(all(or_B1 >= d), 'OR of 2 B1 rows weight >= d (black pixel recoverable)');
-
-%% T2: Encryption correctness
+%% ── T2: Encryption correctness ───────────────────────────────────────────────
 fprintf('\n--- T2: Encryption block weights ---\n');
 rng(0);
-BI_test = uint8([0 1; 1 0]);
-CBI_test = encrypt_image(BI_test, 3, 2);
+BI_t2 = uint8([0 1; 1 0]);
+CBI_t2 = encrypt_image(BI_t2, 3, 2);
+[~, ~, m2, W2, ~] = vc_basis_matrices(2, 3);
 
-[~, ~, m_t, W_t, ~] = vc_basis_matrices(2, 3);
 weight_ok = true;
 for i = 1:3
     for x = 1:2
         for y = 1:2
-            c1 = (y-1)*m_t+1; c2 = y*m_t;
-            H = sum(double(CBI_test{i}(x, c1:c2)));
-            if H ~= W_t
+            c1 = (y-1)*m2+1; c2 = y*m2;
+            if sum(double(CBI_t2{i}(x,c1:c2))) ~= W2
                 weight_ok = false;
             end
         end
     end
 end
-assert_true(weight_ok, 'All ciphertext pixel blocks have Hamming weight W');
+[n_pass, n_fail] = check(weight_ok, ...
+    'All ciphertext pixel blocks have Hamming weight W', n_pass, n_fail);
 
-%% T3: Embed -> Extract round-trip
+%% ── T3: Embed / Extract round-trip BER = 0 ───────────────────────────────────
 fprintf('\n--- T3: Embed/Extract round-trip ---\n');
 rng(1);
-BI_rt = uint8(randi([0,1], 32, 32));
-CBI_rt = encrypt_image(BI_rt, 3, 2);
-keys_rt = [111, 222, 333];
-sd_rt = {uint8(randi([0,1], 1, 32*32)), ...
-         uint8(randi([0,1], 1, 32*32)), ...
-         uint8(randi([0,1], 1, 32*32))};
-MBI_rt = cell(1,3);
+sz = [32, 32];
+BI_t3 = uint8(randi([0,1], sz));
+CBI_t3 = encrypt_image(BI_t3, 3, 2);
+keys_t3 = [111, 222, 333];
+sd_t3 = cell(1,3);
+MBI_t3 = cell(1,3);
 for i = 1:3
-    MBI_rt{i} = embed_data(CBI_rt{i}, sd_rt{i}, keys_rt(i), 2, 3);
-end
-[ext_bits, ~] = extract_data(MBI_rt([1,2]), keys_rt([1,2]), 2, 3);
-ber1 = mean(sd_rt{1}(:) ~= ext_bits(1,:)');
-ber2 = mean(sd_rt{2}(:) ~= ext_bits(2,:)');
-assert_true(ber1 == 0, 'BER = 0 for share 1 extraction');
-assert_true(ber2 == 0, 'BER = 0 for share 2 extraction');
-
-%% T4: Full pipeline lossless recovery
-fprintf('\n--- T4: Full pipeline lossless recovery ---\n');
-rng(2);
-for img_type = {'checkerboard','random','gradient'}
-    BI_p = make_test_binary_image(img_type{1}, 32, 32);
-    CBI_p = encrypt_image(BI_p, 3, 2);
-    keys_p = [10,20,30];
-    MBI_p = cell(1,3);
-    for i = 1:3
-        MBI_p{i} = embed_data(CBI_p{i}, uint8(randi([0,1],1,32*32)), keys_p(i), 2, 3);
-    end
-    [~, CBI_rec] = extract_data(MBI_p([1,2]), keys_p([1,2]), 2, 3);
-    BI_rec = recover_image(CBI_rec, 2, 3);
-    is_lossless = all(BI_p(:) == BI_rec(:));
-    assert_true(is_lossless, sprintf('Lossless recovery: %s', img_type{1}));
+    sd_t3{i} = uint8(randi([0,1], 1, prod(sz)));
+    MBI_t3{i} = embed_data(CBI_t3{i}, sd_t3{i}, keys_t3(i), 2, 3);
 end
 
-%% T5: k-out-of-n property
-fprintf('\n--- T5: k-out-of-n (any 2 of 3 suffice) ---\n');
-rng(3);
-BI_kn = uint8(randi([0,1], 32, 32));
-CBI_kn = encrypt_image(BI_kn, 3, 2);
-keys_kn = [7,8,9];
-MBI_kn = cell(1,3);
-for i = 1:3
-    MBI_kn{i} = embed_data(CBI_kn{i}, uint8(randi([0,1],1,32*32)), keys_kn(i), 2, 3);
-end
+% Test all C(3,2)=3 share combinations
 combos = nchoosek(1:3, 2);
 for c = 1:size(combos,1)
     idx = combos(c,:);
-    [~, CBI_rec] = extract_data(MBI_kn(idx), keys_kn(idx), 2, 3);
-    BI_rec = recover_image(CBI_rec, 2, 3);
-    assert_true(all(BI_kn(:)==BI_rec(:)), sprintf('Shares %s recover losslessly', mat2str(idx)));
+    [ext, ~] = extract_data(MBI_t3(idx), keys_t3(idx), 2, 3);
+    for s = 1:2
+        ber = mean(sd_t3{idx(s)}(:) ~= ext(s,:)');
+        [n_pass, n_fail] = check(ber == 0, ...
+            sprintf('BER=0 for share %d using combo %s', idx(s), mat2str(idx)), ...
+            n_pass, n_fail);
+    end
 end
 
-%% Summary
+%% ── T4: Full pipeline lossless recovery ──────────────────────────────────────
+fprintf('\n--- T4: Full pipeline lossless recovery ---\n');
+rng(2);
+for img_type = {'checkerboard', 'random', 'gradient', 'text'}
+    BI_t4 = make_test_binary_image(img_type{1}, 32, 32);
+    CBI_t4 = encrypt_image(BI_t4, 3, 2);
+    keys_t4 = [10, 20, 30];
+    MBI_t4 = cell(1,3);
+    for i = 1:3
+        MBI_t4{i} = embed_data(CBI_t4{i}, uint8(randi([0,1],1,32*32)), keys_t4(i), 2, 3);
+    end
+    [~, CBI_rec] = extract_data(MBI_t4([1,2]), keys_t4([1,2]), 2, 3);
+    BI_rec = recover_image(CBI_rec, 2, 3);
+    [n_pass, n_fail] = check(all(BI_t4(:) == BI_rec(:)), ...
+        sprintf('Lossless recovery: %s', img_type{1}), n_pass, n_fail);
+end
+
+%% ── T5: k-out-of-n (any 2 of 3 suffice) ─────────────────────────────────────
+fprintf('\n--- T5: k-out-of-n property ---\n');
+rng(3);
+BI_t5 = uint8(randi([0,1], 32, 32));
+CBI_t5 = encrypt_image(BI_t5, 3, 2);
+keys_t5 = [7, 8, 9];
+MBI_t5 = cell(1,3);
+for i = 1:3
+    MBI_t5{i} = embed_data(CBI_t5{i}, uint8(randi([0,1],1,32*32)), keys_t5(i), 2, 3);
+end
+for c = 1:size(combos,1)
+    idx = combos(c,:);
+    [~, CBI_rec] = extract_data(MBI_t5(idx), keys_t5(idx), 2, 3);
+    BI_rec = recover_image(CBI_rec, 2, 3);
+    [n_pass, n_fail] = check(all(BI_t5(:)==BI_rec(:)), ...
+        sprintf('Shares %s recover losslessly', mat2str(idx)), n_pass, n_fail);
+end
+
+%% ── T6: Edge cases ────────────────────────────────────────────────────────────
+fprintf('\n--- T6: Edge cases ---\n');
+% All-white image
+rng(4);
+BI_white = uint8(zeros(16,16));
+CBI_w = encrypt_image(BI_white, 3, 2);
+MBI_w = cell(1,3);
+for i=1:3; MBI_w{i} = embed_data(CBI_w{i}, uint8(randi([0,1],1,256)), i*10, 2, 3); end
+[~, CBI_rw] = extract_data(MBI_w([1,2]), [10,20], 2, 3);
+BI_rw = recover_image(CBI_rw, 2, 3);
+[n_pass, n_fail] = check(all(BI_rw(:)==0), 'All-white image recovered', n_pass, n_fail);
+
+% All-black image
+BI_black = uint8(ones(16,16));
+CBI_b = encrypt_image(BI_black, 3, 2);
+MBI_b = cell(1,3);
+for i=1:3; MBI_b{i} = embed_data(CBI_b{i}, uint8(randi([0,1],1,256)), i*10, 2, 3); end
+[~, CBI_rb] = extract_data(MBI_b([1,2]), [10,20], 2, 3);
+BI_rb = recover_image(CBI_rb, 2, 3);
+[n_pass, n_fail] = check(all(BI_rb(:)==1), 'All-black image recovered', n_pass, n_fail);
+
+%% ── Summary ───────────────────────────────────────────────────────────────────
 fprintf('\n========================================\n');
-fprintf('  Results: %d passed, %d failed\n', pass, fail);
+fprintf('  Results: %d passed, %d failed\n', n_pass, n_fail);
 fprintf('========================================\n');
-if fail == 0
+if n_fail == 0
     fprintf('  ALL TESTS PASSED\n');
 else
-    fprintf('  SOME TESTS FAILED\n');
+    fprintf('  SOME TESTS FAILED — check output above\n');
 end

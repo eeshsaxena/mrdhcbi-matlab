@@ -18,13 +18,16 @@ function MBI = embed_data(CBI_i, secret_bits, embed_key, k, n)
 %          else:            leave block unchanged
 %
 %   Embedding capacity: X*Y bits (one bit per original image pixel).
+%
+%   Indexing note: rd is stored in MATLAB column-major order so that
+%   pixel (x,y) maps to rd index p = (y-1)*X + x. extract_data uses
+%   the same convention, ensuring round-trip consistency.
 
 [X, Ym] = size(CBI_i);
 [~, ~, m, ~, ~] = vc_basis_matrices(k, n);
 Y = Ym / m;
 total_pixels = X * Y;
 
-% Validate secret data length
 if numel(secret_bits) > total_pixels
     error('secret_bits length (%d) exceeds capacity (%d).', numel(secret_bits), total_pixels);
 end
@@ -33,21 +36,21 @@ end
 sd = zeros(1, total_pixels, 'uint8');
 sd(1:numel(secret_bits)) = uint8(secret_bits(:)');
 
-% Pseudorandom sequence (Eq. in Section II-B)
+% Pseudorandom sequence keyed to embed_key
 rng(embed_key, 'twister');
 prn = uint8(randi([0, 1], 1, total_pixels));
 
-% rd = secret XOR pseudorandom sequence
-rd = bitxor(sd, prn);          % 1 x (X*Y) vector
-rd_mat = reshape(rd, X, Y);   % X x Y matrix
+% rd = secret XOR pseudorandom sequence (1 x X*Y, column-major)
+rd = bitxor(sd, prn);
 
-% Data embedding
+% Data embedding — column-major pixel index p = (y-1)*X + x
 MBI = CBI_i;
 for x = 1:X
     for y = 1:Y
-        if rd_mat(x, y) == 0
+        p  = (y - 1) * X + x;
+        c1 = (y - 1) * m + 1;
+        if rd(p) == 0
             % Flip first element of pixel block (Eq. 5)
-            c1 = (y - 1) * m + 1;
             MBI(x, c1) = 1 - CBI_i(x, c1);
         end
     end
